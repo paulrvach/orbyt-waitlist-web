@@ -1,6 +1,6 @@
 {
   "name": "Orbyt",
-  "description": "A local-first AI-powered student assistant that connects to Canvas LMS, builds a normalized local view of coursework, and helps students plan their week.",
+  "description": "Desktop waitlist site for Orbyt—a team of proactive AI agents that manage deadlines, study flow, and campus life. Connects Canvas, calendar, notes, and chat; local-first and built for students who want to win.",
   "requestFramePermissions": [],
   "majorCapabilities": []
 }
