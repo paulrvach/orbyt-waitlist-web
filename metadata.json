@@ -1,0 +1,6 @@
+{
+  "name": "Orbyt",
+  "description": "A local-first AI-powered student assistant that connects to Canvas LMS, builds a normalized local view of coursework, and helps students plan their week.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
