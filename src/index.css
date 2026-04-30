@@ -100,4 +100,9 @@
   body {
     @apply bg-surface font-sans text-ink antialiased;
   }
+
+  :where(a, button, input, textarea, select):focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--accent);
+  }
 }

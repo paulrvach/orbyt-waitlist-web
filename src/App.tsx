@@ -33,6 +33,11 @@ import {
 } from "@/components/brand-icon";
 import { Features } from "@/components/blocks/features-8";
 import FAQs from "@/components/ui/faq";
+import {
+  fetchLatestRelease,
+  GitHubReleaseError,
+  type GitHubRelease,
+} from "@/lib/github-releases";
 
 const Hi = ({
   icon,
@@ -55,11 +60,97 @@ const Hi = ({
 );
 
 const LOOPS_FORM_URL = import.meta.env.VITE_LOOPS_FORM_URL as string | undefined;
+const GITHUB_RELEASES_REPO = import.meta.env.VITE_GITHUB_RELEASES_REPO as string | undefined;
+const DOWNLOAD_PATH = "/download";
+const HOME_PATH = "/";
+const SHELL_PADDING = "px-6 sm:px-8 lg:px-12";
+const FOCUS_RING =
+  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-surface";
 
 type LoopsFormResponse = {
   success?: boolean;
   message?: string;
 };
+
+type DownloadViewState =
+  | { status: "missing-config" }
+  | { status: "loading"; repo: string }
+  | { status: "success"; repo: string; release: GitHubRelease }
+  | { status: "no-releases"; repo: string }
+  | { status: "not-found"; repo: string }
+  | { status: "error"; repo: string; message: string };
+
+const HOME_NAV_ITEMS = [
+  { label: "Features", href: "#features" },
+  { label: "Integrations", href: "#integrations" },
+  { label: "Demo", href: "#demo" },
+  { label: "FAQ", href: "#faq" },
+  { label: "Download", href: DOWNLOAD_PATH },
+] as const;
+
+const DOWNLOAD_NAV_ITEMS = [
+  { label: "Home", href: HOME_PATH },
+  { label: "Download", href: DOWNLOAD_PATH },
+] as const;
+
+function formatReleaseDate(value: string) {
+  if (!value) return "Unknown publish date";
+
+  try {
+    return new Intl.DateTimeFormat("en-US", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    }).format(new Date(value));
+  } catch {
+    return value;
+  }
+}
+
+function formatFileSize(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes < 1024) {
+    return `${bytes || 0} B`;
+  }
+
+  const units = ["KB", "MB", "GB", "TB"];
+  let value = bytes / 1024;
+  let unitIndex = 0;
+
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+
+  const digits = value >= 100 ? 0 : value >= 10 ? 1 : 2;
+  return `${value.toFixed(digits)} ${units[unitIndex]}`;
+}
+
+function isInternalAppPath(href: string) {
+  return href === HOME_PATH || href === DOWNLOAD_PATH;
+}
+
+function pickMacDownloadAsset(
+  assets: GitHubRelease["assets"],
+  arch: "arm64" | "x64",
+) {
+  const lowerArch = arch.toLowerCase();
+  const candidates = assets.filter((asset) => {
+    const lowerName = asset.name.toLowerCase();
+    return (
+      lowerName.includes(lowerArch) &&
+      !lowerName.endsWith(".blockmap") &&
+      !lowerName.endsWith(".yml") &&
+      !lowerName.endsWith(".yaml") &&
+      !lowerName.endsWith(".log")
+    );
+  });
+
+  return (
+    candidates.find((asset) => asset.name.toLowerCase().endsWith(".dmg")) ??
+    candidates.find((asset) => asset.name.toLowerCase().endsWith(".zip")) ??
+    null
+  );
+}
 
 // --- Components ---
 
@@ -108,22 +199,41 @@ const Logo = ({ className = "w-8 h-8" }: { className?: string }) => (
 );
 
 const Navbar = ({
+  currentPath,
+  onNavigate,
   onJoinWaitlist,
   isDark,
   onToggleTheme,
 }: {
+  currentPath: string;
+  onNavigate: (path: string) => void;
   onJoinWaitlist: () => void;
   isDark: boolean;
   onToggleTheme: () => void;
 }) => {
   const [isScrolled, setIsScrolled] = useState(false);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const isDownloadPage = currentPath === DOWNLOAD_PATH;
+  const navItems = isDownloadPage ? DOWNLOAD_NAV_ITEMS : HOME_NAV_ITEMS;
 
   useEffect(() => {
     const handleScroll = () => setIsScrolled(window.scrollY > 20);
     window.addEventListener("scroll", handleScroll);
     return () => window.removeEventListener("scroll", handleScroll);
   }, []);
+
+  const handleNavClick = useCallback(
+    (event: React.MouseEvent<HTMLAnchorElement>, href: string) => {
+      if (!isInternalAppPath(href)) {
+        return;
+      }
+
+      event.preventDefault();
+      setIsMenuOpen(false);
+      onNavigate(href);
+    },
+    [onNavigate],
+  );
 
   return (
     <nav
@@ -133,25 +243,28 @@ const Navbar = ({
           : "bg-transparent py-8"
       }`}
     >
-      <div className="mx-auto flex max-w-7xl items-center justify-between px-12">
-        <div className="flex items-center gap-3">
+      <div className={`mx-auto flex max-w-7xl items-center justify-between ${SHELL_PADDING}`}>
+        <a
+          href={HOME_PATH}
+          onClick={(event) => handleNavClick(event, HOME_PATH)}
+          className={`flex items-center gap-3 rounded-lg ${FOCUS_RING}`}
+          aria-label="Go to homepage"
+        >
           <Logo className="h-10 w-10" />
           <span className="font-logo text-2xl font-semibold tracking-tight text-ink">
             Orbyt
           </span>
-        </div>
+        </a>
 
         <div className="hidden items-center gap-8 md:flex">
-          {[
-              { label: "Features", href: "features" },
-              { label: "Integrations", href: "integrations" },
-              { label: "Demo", href: "demo" },
-              { label: "FAQ", href: "faq" },
-            ].map((item) => (
+          {navItems.map((item) => (
             <a
               key={item.href}
-              href={`#${item.href}`}
-              className="font-mono text-[13px] uppercase tracking-wider text-subtle transition-colors hover:text-ink"
+              href={item.href}
+              onClick={(event) => handleNavClick(event, item.href)}
+              className={`rounded-md font-mono text-[13px] uppercase tracking-wider transition-colors hover:text-ink ${FOCUS_RING} ${
+                currentPath === item.href ? "text-ink" : "text-subtle"
+              }`}
             >
               {item.label}
             </a>
@@ -159,7 +272,7 @@ const Navbar = ({
           <button
             type="button"
             onClick={onToggleTheme}
-            className="flex h-10 w-10 items-center justify-center rounded-lg border border-border bg-surface text-ink shadow-sm transition-colors hover:bg-muted"
+            className={`flex h-10 w-10 items-center justify-center rounded-lg border border-border bg-surface text-ink shadow-sm transition-colors hover:bg-muted ${FOCUS_RING}`}
             aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
           >
             {isDark ? (
@@ -171,7 +284,7 @@ const Navbar = ({
           <button
             type="button"
             onClick={onJoinWaitlist}
-            className="rounded-lg bg-accent px-6 py-2.5 text-sm font-semibold text-white shadow-sm transition-all hover:opacity-90 active:scale-95"
+            className={`rounded-lg bg-accent px-6 py-2.5 text-sm font-semibold text-white shadow-sm transition-all hover:opacity-90 active:scale-95 ${FOCUS_RING}`}
           >
             Join Waitlist
           </button>
@@ -181,7 +294,7 @@ const Navbar = ({
           <button
             type="button"
             onClick={onToggleTheme}
-            className="flex h-10 w-10 items-center justify-center rounded-lg border border-border text-ink"
+            className={`flex h-10 w-10 items-center justify-center rounded-lg border border-border text-ink ${FOCUS_RING}`}
             aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
           >
             {isDark ? (
@@ -190,13 +303,12 @@ const Navbar = ({
               <Hi icon={Moon02Icon} size={20} className="h-5 w-5" />
             )}
           </button>
-          <button type="button" className="text-ink" onClick={() => setIsMenuOpen(!isMenuOpen)} aria-expanded={isMenuOpen} aria-label={isMenuOpen ? "Close menu" : "Open menu"}>
+          <button type="button" className={`rounded-md text-ink ${FOCUS_RING}`} onClick={() => setIsMenuOpen(!isMenuOpen)} aria-expanded={isMenuOpen} aria-label={isMenuOpen ? "Close menu" : "Open menu"}>
             {isMenuOpen ? <Hi icon={Cancel01Icon} size={22} /> : <Hi icon={Menu01Icon} size={22} />}
           </button>
         </div>
       </div>
 
-      {/* Mobile Menu */}
       <AnimatePresence>
         {isMenuOpen && (
           <motion.div
@@ -206,17 +318,14 @@ const Navbar = ({
             className="absolute left-0 right-0 top-full border-b border-border bg-surface p-8 shadow-xl md:hidden"
           >
             <div className="flex flex-col gap-6">
-              {[
-                  { label: "Features", href: "features" },
-                  { label: "Integrations", href: "integrations" },
-                  { label: "Demo", href: "demo" },
-                  { label: "FAQ", href: "faq" },
-                ].map((item) => (
+              {navItems.map((item) => (
                 <a
                   key={item.href}
-                  href={`#${item.href}`}
-                  onClick={() => setIsMenuOpen(false)}
-                  className="font-mono text-lg uppercase text-subtle transition-colors hover:text-ink"
+                  href={item.href}
+                  onClick={(event) => handleNavClick(event, item.href)}
+                  className={`rounded-md font-mono text-lg uppercase transition-colors hover:text-ink ${FOCUS_RING} ${
+                    currentPath === item.href ? "text-ink" : "text-subtle"
+                  }`}
                 >
                   {item.label}
                 </a>
@@ -227,7 +336,7 @@ const Navbar = ({
                   setIsMenuOpen(false);
                   onJoinWaitlist();
                 }}
-                className="w-full rounded-xl bg-accent px-5 py-4 text-lg font-semibold text-white"
+                className={`w-full rounded-xl bg-accent px-5 py-4 text-lg font-semibold text-white ${FOCUS_RING}`}
               >
                 Join Waitlist
               </button>
@@ -239,7 +348,11 @@ const Navbar = ({
   );
 };
 
-const Hero = ({ emailInputRef }: { emailInputRef: React.RefObject<HTMLInputElement | null> }) => {
+const WaitlistSignup = ({
+  emailInputRef,
+}: {
+  emailInputRef: React.RefObject<HTMLInputElement | null>;
+}) => {
   const [email, setEmail] = useState("");
   const [isSubmitted, setIsSubmitted] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -290,6 +403,65 @@ const Hero = ({ emailInputRef }: { emailInputRef: React.RefObject<HTMLInputEleme
     }
   };
 
+  return (
+    <div id="waitlist" className="scroll-mt-28">
+      {!isSubmitted ? (
+        <form onSubmit={handleSubmit} className="flex flex-col gap-2">
+          <div className="flex flex-col gap-3 rounded-xl border border-border bg-card p-1.5 shadow-sm transition-colors focus-within:border-accent sm:flex-row">
+            <input
+              ref={emailInputRef}
+              type="email"
+              placeholder="student@university.edu"
+              required
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              disabled={!formConfigured || isSubmitting}
+              className="flex-1 border-none bg-transparent px-4 py-3 text-base text-ink outline-none disabled:opacity-60"
+            />
+            <button
+              type="submit"
+              disabled={!formConfigured || isSubmitting}
+              className="flex shrink-0 items-center justify-center gap-2 rounded-lg bg-accent px-8 py-3 text-sm font-bold text-white transition-all hover:opacity-90 active:scale-95 disabled:pointer-events-none disabled:opacity-60"
+            >
+              {isSubmitting ? "Joining…" : "Join Waitlist"}
+            </button>
+          </div>
+          {!formConfigured && (
+            <p className="rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+              Set <span className="font-mono">VITE_LOOPS_FORM_URL</span> to your Loops form endpoint to enable signups.
+            </p>
+          )}
+          {error && (
+            <p
+              className="rounded-lg border border-red-100 bg-red-50 px-3 py-2 text-sm text-red-700"
+              role="alert"
+            >
+              {error}
+            </p>
+          )}
+        </form>
+      ) : (
+        <motion.div
+          initial={{ scale: 0.9, opacity: 0 }}
+          animate={{ scale: 1, opacity: 1 }}
+          className="flex items-center gap-4 rounded-xl border border-green-100 bg-green-50 p-5 text-green-700"
+        >
+          <Hi
+            icon={CheckmarkCircle02Icon}
+            size={24}
+            className="h-6 w-6 shrink-0 text-green-600"
+          />
+          <div className="text-left">
+            <p className="font-bold">You're on the list!</p>
+            <p className="text-sm opacity-80">We'll notify you when a spot opens up.</p>
+          </div>
+        </motion.div>
+      )}
+    </div>
+  );
+};
+
+const Hero = ({ onNavigate }: { onNavigate: (path: string) => void }) => {
   const heroFloaters: {
     top: string;
     left: string;
@@ -358,52 +530,20 @@ const Hero = ({ emailInputRef }: { emailInputRef: React.RefObject<HTMLInputEleme
             your study flow, and keep your campus life running — so you show up prepared, every time.
           </p>
 
-          <div id="waitlist" className="max-w-md scroll-mt-28">
-            {!isSubmitted ? (
-              <form onSubmit={handleSubmit} className="flex flex-col gap-2">
-                <div className="flex gap-3 rounded-xl border border-border bg-card p-1.5 shadow-sm transition-colors focus-within:border-accent">
-                  <input
-                    ref={emailInputRef}
-                    type="email"
-                    placeholder="student@university.edu"
-                    required
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    disabled={!formConfigured || isSubmitting}
-                    className="flex-1 bg-transparent border-none outline-none text-ink px-4 py-3 text-base font-sans disabled:opacity-60"
-                  />
-                  <button
-                    type="submit"
-                    disabled={!formConfigured || isSubmitting}
-                    className="bg-accent text-white px-8 py-3 rounded-lg font-bold text-sm hover:opacity-90 transition-all active:scale-95 flex items-center justify-center gap-2 disabled:opacity-60 disabled:pointer-events-none shrink-0"
-                  >
-                    {isSubmitting ? "Joining…" : "Join Waitlist"}
-                  </button>
-                </div>
-                {!formConfigured && (
-                  <p className="text-sm text-amber-800 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
-                    Set <span className="font-mono">VITE_LOOPS_FORM_URL</span> to your Loops form endpoint to enable signups.
-                  </p>
-                )}
-                {error && (
-                  <p className="text-sm text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2" role="alert">
-                    {error}
-                  </p>
-                )}
-              </form>
-            ) : (
-              <motion.div 
-                initial={{ scale: 0.9, opacity: 0 }}
-                animate={{ scale: 1, opacity: 1 }}
-                className="bg-green-50 border border-green-100 p-5 rounded-xl flex items-center gap-4 text-green-700"
-              >
-                <Hi icon={CheckmarkCircle02Icon} size={24} className="h-6 w-6 shrink-0 text-green-600" />
-                <div className="text-left">
-                  <p className="font-bold">You're on the list!</p>
-                  <p className="text-sm opacity-80">We'll notify you when a spot opens up.</p>
-                </div>
-              </motion.div>
-            )}
+          <div className="flex max-w-md flex-col items-start gap-4">
+            <a
+              href={DOWNLOAD_PATH}
+              onClick={(event) => {
+                event.preventDefault();
+                onNavigate(DOWNLOAD_PATH);
+              }}
+              className={`inline-flex items-center justify-center rounded-xl bg-accent px-8 py-4 text-base font-semibold text-white shadow-sm transition-all hover:opacity-90 active:scale-95 ${FOCUS_RING}`}
+            >
+              Download Orbyt
+            </a>
+            <p className="text-sm leading-6 text-subtle">
+              Want product updates instead? Join the mailing list just below.
+            </p>
           </div>
 
           <div className="mt-12 flex flex-wrap gap-4">
@@ -823,17 +963,381 @@ const ChatDemo = () => {
   );
 };
 
-const Footer = () => {
+const HomePage = ({
+  emailInputRef,
+  onNavigate,
+}: {
+  emailInputRef: React.RefObject<HTMLInputElement | null>;
+  onNavigate: (path: string) => void;
+}) => {
+  return (
+    <main>
+      <Hero onNavigate={onNavigate} />
+      <section className="border-t border-border bg-muted py-24">
+        <div className={`mx-auto max-w-4xl ${SHELL_PADDING}`}>
+          <div className="mx-auto max-w-2xl text-center">
+            <span className="mb-4 inline-flex items-center rounded-full border border-border bg-surface px-4 py-2 font-mono text-[11px] uppercase tracking-[0.28em] text-accent">
+              Mailing List
+            </span>
+            <h2 className="text-4xl font-semibold tracking-tight text-ink sm:text-5xl">
+              Join the list for launch updates.
+            </h2>
+            <p className="mt-4 text-lg leading-8 text-subtle">
+              Get the release announcement, rollout timing, and early access notes in your inbox.
+            </p>
+          </div>
+          <div className="mx-auto mt-10 max-w-2xl">
+            <WaitlistSignup emailInputRef={emailInputRef} />
+          </div>
+        </div>
+      </section>
+      <Features />
+      <Integrations />
+      <ChatDemo />
+      <FAQs />
+    </main>
+  );
+};
+
+const DownloadPage = ({
+  onNavigate,
+}: {
+  onNavigate: (path: string) => void;
+}) => {
+  const repo = GITHUB_RELEASES_REPO?.trim() ?? "";
+  const [retryCount, setRetryCount] = useState(0);
+  const [viewState, setViewState] = useState<DownloadViewState>(() =>
+    repo ? { status: "loading", repo } : { status: "missing-config" },
+  );
+
+  useEffect(() => {
+    if (!repo) {
+      setViewState({ status: "missing-config" });
+      return;
+    }
+
+    const abortController = new AbortController();
+
+    const loadRelease = async () => {
+      setViewState({ status: "loading", repo });
+
+      try {
+        const release = await fetchLatestRelease(repo, abortController.signal);
+
+        if (!release) {
+          setViewState({ status: "no-releases", repo });
+          return;
+        }
+
+        setViewState({ status: "success", repo, release });
+      } catch (error) {
+        if (abortController.signal.aborted) {
+          return;
+        }
+
+        if (error instanceof GitHubReleaseError && error.status === 404) {
+          setViewState({ status: "not-found", repo });
+          return;
+        }
+
+        setViewState({
+          status: "error",
+          repo,
+          message:
+            error instanceof Error
+              ? error.message
+              : "Unable to load the latest release right now.",
+        });
+      }
+    };
+
+    loadRelease();
+
+    return () => abortController.abort();
+  }, [repo, retryCount]);
+
+  const retry = useCallback(() => {
+    setRetryCount((count) => count + 1);
+  }, []);
+
+  const release = viewState.status === "success" ? viewState.release : null;
+  const appleSiliconAsset = release ? pickMacDownloadAsset(release.assets, "arm64") : null;
+  const intelAsset = release ? pickMacDownloadAsset(release.assets, "x64") : null;
+
+  return (
+    <main className="min-h-screen bg-surface pt-24 sm:pt-28">
+      <section className="relative overflow-hidden border-b border-border">
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,_rgba(0,110,254,0.18),_transparent_38%),radial-gradient(circle_at_85%_20%,_rgba(0,110,254,0.08),_transparent_26%)]" />
+        <div className="relative mx-auto flex min-h-[calc(100vh-10rem)] max-w-5xl flex-col justify-center px-5 py-14 sm:px-8 lg:px-12 lg:py-20">
+          {(viewState.status === "missing-config" ||
+            viewState.status === "loading" ||
+            viewState.status === "not-found" ||
+            viewState.status === "no-releases" ||
+            viewState.status === "error") && (
+            <div className="mx-auto w-full max-w-2xl border-y border-border/80 py-8 sm:py-10">
+              {viewState.status === "missing-config" && (
+                <div className="max-w-2xl space-y-4">
+                  <div className="flex items-center gap-3">
+                    <Hi icon={DatabaseIcon} size={22} className="text-accent" />
+                    <h2 className="text-2xl font-semibold text-ink">Release source not configured</h2>
+                  </div>
+                  <p className="text-sm leading-7 text-subtle sm:text-base">
+                    Set <span className="font-mono text-ink">VITE_GITHUB_RELEASES_REPO</span> to an <span className="font-mono text-ink">owner/repo</span> value so this page can resolve the newest release.
+                  </p>
+                </div>
+              )}
+
+              {viewState.status === "loading" && (
+                <div className="max-w-2xl space-y-6">
+                  <div className="flex items-center gap-3">
+                    <motion.div
+                      className="size-3 rounded-full bg-accent"
+                      animate={{ opacity: [0.35, 1, 0.35], scale: [0.92, 1, 0.92] }}
+                      transition={{ duration: 1.2, repeat: Infinity }}
+                    />
+                    <p className="font-mono text-xs uppercase tracking-[0.28em] text-subtle">
+                      Fetching latest release for {viewState.repo}
+                    </p>
+                  </div>
+                  <div className="space-y-3">
+                    <div className="h-7 w-3/5 rounded-full bg-muted" />
+                    <div className="h-4 w-2/5 rounded-full bg-muted" />
+                    <div className="h-28 rounded-[2rem] bg-muted" />
+                  </div>
+                </div>
+              )}
+
+              {viewState.status === "not-found" && (
+                <div className="max-w-2xl space-y-5">
+                  <div className="flex items-center gap-3">
+                    <Hi icon={Cancel01Icon} size={22} className="text-accent" />
+                    <h2 className="text-2xl font-semibold text-ink">Repository not found</h2>
+                  </div>
+                  <p className="text-sm leading-7 text-subtle sm:text-base">
+                    GitHub returned <span className="font-mono text-ink">404</span> for <span className="font-mono text-ink">{viewState.repo}</span>. Update the repo slug and the page will start tracking the newest release automatically.
+                  </p>
+                </div>
+              )}
+
+              {viewState.status === "no-releases" && (
+                <div className="max-w-2xl space-y-5">
+                  <div className="flex items-center gap-3">
+                    <Hi icon={SparklesIcon} size={22} className="text-accent" />
+                    <h2 className="text-2xl font-semibold text-ink">No releases yet</h2>
+                  </div>
+                  <p className="text-sm leading-7 text-subtle sm:text-base">
+                    <span className="font-mono text-ink">{viewState.repo}</span> is reachable, but GitHub did not return any tagged releases yet.
+                  </p>
+                </div>
+              )}
+
+              {viewState.status === "error" && (
+                <div className="max-w-2xl space-y-5">
+                  <div className="flex items-center gap-3">
+                    <Hi icon={Cancel01Icon} size={22} className="text-accent" />
+                    <h2 className="text-2xl font-semibold text-ink">Couldn’t load the latest release</h2>
+                  </div>
+                  <p className="text-sm leading-7 text-subtle sm:text-base">
+                    GitHub didn’t return a usable response for <span className="font-mono text-ink">{viewState.repo}</span>. This usually means a transient API issue or rate limit.
+                  </p>
+                  <p className="rounded-2xl border border-border bg-surface px-4 py-3 font-mono text-xs text-subtle">
+                    {viewState.message}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={retry}
+                    className={`inline-flex min-h-11 items-center justify-center rounded-full bg-accent px-5 py-3 text-sm font-semibold text-white shadow-sm transition-all hover:opacity-90 active:scale-95 ${FOCUS_RING}`}
+                  >
+                    Retry fetch
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {release && (
+            <motion.div
+              initial={{ opacity: 0, y: 16 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.4, ease: "easeOut" }}
+              className="mx-auto grid w-full max-w-4xl gap-5 md:grid-cols-2"
+            >
+              {[
+                {
+                  label: "Apple Silicon",
+                  sublabel: "M1, M2, M3, M4",
+                  asset: appleSiliconAsset,
+                  available: true,
+                },
+                {
+                  label: "Intel Mac",
+                  sublabel: "Intel processors",
+                  asset: intelAsset,
+                  available: true,
+                },
+                {
+                  label: "Windows",
+                  sublabel: "Coming soon",
+                  asset: null,
+                  available: false,
+                },
+                {
+                  label: "Linux",
+                  sublabel: "Coming soon",
+                  asset: null,
+                  available: false,
+                },
+              ].map((item) =>
+                item.available ? (
+                  <a
+                    key={item.label}
+                    href={item.asset?.downloadUrl ?? release.htmlUrl}
+                    className={`group flex min-h-[280px] flex-col justify-between rounded-[2rem] border border-border bg-card/70 p-7 shadow-[0_22px_60px_rgba(0,0,0,0.12)] transition-all hover:-translate-y-1 hover:border-accent/40 hover:bg-card hover:shadow-[0_28px_80px_rgba(0,110,254,0.16)] sm:p-8 ${FOCUS_RING}`}
+                  >
+                    <div className="space-y-6">
+                      <div className="inline-flex items-center gap-2 rounded-full bg-accent/10 px-3 py-1.5 font-mono text-[11px] uppercase tracking-[0.24em] text-accent">
+                        <motion.span
+                          className="block size-2 rounded-full bg-accent"
+                          animate={{ opacity: [0.55, 1, 0.55] }}
+                          transition={{ duration: 2.4, repeat: Infinity }}
+                        />
+                        macOS download
+                      </div>
+
+                      <div className="space-y-3">
+                        <h2 className="text-3xl font-semibold tracking-tight text-ink sm:text-4xl">
+                          {item.label}
+                        </h2>
+                        <p className="text-sm leading-7 text-subtle sm:text-base">
+                          {item.sublabel}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="space-y-4">
+                      {item.asset ? (
+                        <>
+                          <div className="space-y-2">
+                            <p className="truncate text-base font-semibold text-ink">
+                              {item.asset.name}
+                            </p>
+                            <p className="text-sm text-subtle">
+                              {formatFileSize(item.asset.size)}
+                              {item.asset.downloadCount > 0
+                                ? ` • ${item.asset.downloadCount} downloads`
+                                : ""}
+                            </p>
+                          </div>
+                          <div className="flex items-center justify-between gap-4">
+                            <span className="font-mono text-xs uppercase tracking-[0.24em] text-subtle">
+                              {release.tag}
+                            </span>
+                            <span className="font-mono text-xs uppercase tracking-[0.24em] text-accent transition-transform group-hover:translate-x-1">
+                              Download
+                            </span>
+                          </div>
+                        </>
+                      ) : (
+                        <div className="space-y-3">
+                          <p className="text-sm leading-7 text-subtle">
+                            This release doesn&apos;t currently include a matching {item.label.toLowerCase()} installer.
+                          </p>
+                          <span className="font-mono text-xs uppercase tracking-[0.24em] text-accent">
+                            View release
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  </a>
+                ) : (
+                  <div
+                    key={item.label}
+                    className="flex min-h-[280px] flex-col justify-between rounded-[2rem] border border-border bg-card/35 p-7 opacity-80 sm:p-8"
+                  >
+                    <div className="space-y-6">
+                      <div className="inline-flex items-center gap-2 rounded-full border border-border/80 px-3 py-1.5 font-mono text-[11px] uppercase tracking-[0.24em] text-subtle">
+                        Coming soon
+                      </div>
+
+                      <div className="space-y-3">
+                        <h2 className="text-3xl font-semibold tracking-tight text-ink sm:text-4xl">
+                          {item.label}
+                        </h2>
+                        <p className="text-sm leading-7 text-subtle sm:text-base">
+                          {item.sublabel}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="space-y-3">
+                      <p className="text-sm leading-7 text-subtle">
+                        Windows downloads aren&apos;t available yet, but this card reserves the slot in the platform lineup.
+                      </p>
+                      <span className="font-mono text-xs uppercase tracking-[0.24em] text-subtle">
+                        Not yet available
+                      </span>
+                    </div>
+                  </div>
+                ),
+              )}
+            </motion.div>
+          )}
+        </div>
+      </section>
+    </main>
+  );
+};
+
+const Footer = ({
+  currentPath,
+  onNavigate,
+}: {
+  currentPath: string;
+  onNavigate: (path: string) => void;
+}) => {
+  const footerLinks = [
+    { label: "Home", href: HOME_PATH },
+    { label: "Download", href: DOWNLOAD_PATH },
+  ];
+
+  const handleNavClick = useCallback(
+    (event: React.MouseEvent<HTMLAnchorElement>, href: string) => {
+      event.preventDefault();
+      onNavigate(href);
+    },
+    [onNavigate],
+  );
+
   return (
     <footer className="border-t border-border bg-surface py-16">
-      <div className="mx-auto flex max-w-7xl flex-col items-center justify-between gap-10 px-12 md:flex-row">
-        <div className="flex items-center gap-3">
+      <div className={`mx-auto flex max-w-7xl flex-col items-center justify-between gap-8 ${SHELL_PADDING} md:flex-row`}>
+        <a
+          href={HOME_PATH}
+          onClick={(event) => handleNavClick(event, HOME_PATH)}
+          className={`flex items-center gap-3 rounded-lg ${FOCUS_RING}`}
+          aria-label="Go to homepage"
+        >
           <Logo className="h-8 w-8" />
           <span className="font-logo text-2xl font-semibold tracking-tight text-ink">
             Orbyt
           </span>
+        </a>
+
+        <div className="flex items-center gap-6">
+          {footerLinks.map((item) => (
+            <a
+              key={item.href}
+              href={item.href}
+              onClick={(event) => handleNavClick(event, item.href)}
+              className={`rounded-md font-mono text-xs uppercase tracking-[0.24em] transition-colors hover:text-ink ${FOCUS_RING} ${
+                currentPath === item.href ? "text-ink" : "text-subtle"
+              }`}
+            >
+              {item.label}
+            </a>
+          ))}
         </div>
-        
+
         <div className="flex gap-8">
           <Hi icon={GithubIcon} size={20} className="cursor-pointer text-subtle transition-colors hover:text-ink" />
           <Hi icon={TwitterIcon} size={20} className="cursor-pointer text-subtle transition-colors hover:text-ink" />
@@ -853,21 +1357,65 @@ const Footer = () => {
 
 export default function App() {
   const waitlistEmailRef = useRef<HTMLInputElement>(null);
+  const [currentPath, setCurrentPath] = useState(() => {
+    if (typeof window === "undefined") {
+      return HOME_PATH;
+    }
+
+    return window.location.pathname === DOWNLOAD_PATH ? DOWNLOAD_PATH : HOME_PATH;
+  });
   const [isDark, setIsDark] = useState(() =>
     typeof document !== "undefined" &&
     document.documentElement.classList.contains("dark"),
   );
 
   useEffect(() => {
+    const handlePopState = () => {
+      setCurrentPath(
+        window.location.pathname === DOWNLOAD_PATH ? DOWNLOAD_PATH : HOME_PATH,
+      );
+    };
+
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
+
+  useEffect(() => {
     document.documentElement.classList.toggle("dark", isDark);
     localStorage.setItem("theme", isDark ? "dark" : "light");
   }, [isDark]);
+
+  useEffect(() => {
+    document.title =
+      currentPath === DOWNLOAD_PATH ? "Orbyt - Download" : "Orbyt - Waitlist";
+    window.scrollTo(0, 0);
+  }, [currentPath]);
 
   const toggleTheme = useCallback(() => {
     setIsDark((d) => !d);
   }, []);
 
+  const navigate = useCallback((path: string) => {
+    const nextPath = path === DOWNLOAD_PATH ? DOWNLOAD_PATH : HOME_PATH;
+    if (window.location.pathname !== nextPath) {
+      window.history.pushState({}, "", nextPath);
+    }
+    setCurrentPath(nextPath);
+  }, []);
+
   const scrollToWaitlist = useCallback(() => {
+    if (currentPath !== HOME_PATH) {
+      navigate(HOME_PATH);
+      window.setTimeout(() => {
+        document.getElementById("waitlist")?.scrollIntoView({
+          behavior: "smooth",
+          block: "center",
+        });
+        waitlistEmailRef.current?.focus({ preventScroll: true });
+      }, 50);
+      return;
+    }
+
     document.getElementById("waitlist")?.scrollIntoView({
       behavior: "smooth",
       block: "center",
@@ -875,23 +1423,23 @@ export default function App() {
     window.setTimeout(() => {
       waitlistEmailRef.current?.focus({ preventScroll: true });
     }, 350);
-  }, []);
+  }, [currentPath, navigate]);
 
   return (
     <div className="min-h-screen bg-surface font-sans text-ink selection:bg-accent/20 selection:text-accent">
       <Navbar
+        currentPath={currentPath}
+        onNavigate={navigate}
         onJoinWaitlist={scrollToWaitlist}
         isDark={isDark}
         onToggleTheme={toggleTheme}
       />
-      <main>
-        <Hero emailInputRef={waitlistEmailRef} />
-        <Features />
-        <Integrations />
-        <ChatDemo />
-        <FAQs />
-      </main>
-      <Footer />
+      {currentPath === DOWNLOAD_PATH ? (
+        <DownloadPage onNavigate={navigate} />
+      ) : (
+        <HomePage emailInputRef={waitlistEmailRef} onNavigate={navigate} />
+      )}
+      <Footer currentPath={currentPath} onNavigate={navigate} />
     </div>
   );
 }
