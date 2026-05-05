@@ -129,26 +129,74 @@ function isInternalAppPath(href: string) {
   return href === HOME_PATH || href === DOWNLOAD_PATH;
 }
 
+const ignoredReleaseAssetSuffixes = [
+  ".blockmap",
+  ".yml",
+  ".yaml",
+  ".log",
+] as const;
+
+function pickPreferredReleaseAsset(
+  assets: GitHubRelease["assets"],
+  isCandidate: (lowerName: string) => boolean,
+  preferredSuffixes: readonly string[],
+) {
+  const candidates = assets.filter((asset) => {
+    const lowerName = asset.name.toLowerCase();
+    return (
+      isCandidate(lowerName) &&
+      !ignoredReleaseAssetSuffixes.some((suffix) => lowerName.endsWith(suffix))
+    );
+  });
+
+  for (const suffix of preferredSuffixes) {
+    const match = candidates.find((asset) =>
+      asset.name.toLowerCase().endsWith(suffix),
+    );
+
+    if (match) return match;
+  }
+
+  return candidates[0] ?? null;
+}
+
 function pickMacDownloadAsset(
   assets: GitHubRelease["assets"],
   arch: "arm64" | "x64",
 ) {
   const lowerArch = arch.toLowerCase();
-  const candidates = assets.filter((asset) => {
-    const lowerName = asset.name.toLowerCase();
-    return (
-      lowerName.includes(lowerArch) &&
-      !lowerName.endsWith(".blockmap") &&
-      !lowerName.endsWith(".yml") &&
-      !lowerName.endsWith(".yaml") &&
-      !lowerName.endsWith(".log")
-    );
-  });
 
-  return (
-    candidates.find((asset) => asset.name.toLowerCase().endsWith(".dmg")) ??
-    candidates.find((asset) => asset.name.toLowerCase().endsWith(".zip")) ??
-    null
+  return pickPreferredReleaseAsset(
+    assets,
+    (lowerName) => lowerName.includes(lowerArch),
+    [".dmg", ".zip"],
+  );
+}
+
+function pickWindowsDownloadAsset(assets: GitHubRelease["assets"]) {
+  return pickPreferredReleaseAsset(
+    assets,
+    (lowerName) =>
+      (lowerName.includes("x64") ||
+        lowerName.includes("x86_64") ||
+        lowerName.includes("amd64")) &&
+      (lowerName.endsWith(".exe") ||
+        lowerName.endsWith(".msi") ||
+        lowerName.includes("win") ||
+        lowerName.includes("windows")),
+    [".exe", ".msi", ".zip"],
+  );
+}
+
+function pickLinuxDownloadAsset(assets: GitHubRelease["assets"]) {
+  return pickPreferredReleaseAsset(
+    assets,
+    (lowerName) =>
+      lowerName.includes("linux") ||
+      lowerName.includes("appimage") ||
+      lowerName.endsWith(".deb") ||
+      lowerName.endsWith(".rpm"),
+    [".appimage", ".deb", ".rpm", ".tar.gz"],
   );
 }
 
@@ -1063,6 +1111,36 @@ const DownloadPage = ({
   const release = viewState.status === "success" ? viewState.release : null;
   const appleSiliconAsset = release ? pickMacDownloadAsset(release.assets, "arm64") : null;
   const intelAsset = release ? pickMacDownloadAsset(release.assets, "x64") : null;
+  const windowsAsset = release ? pickWindowsDownloadAsset(release.assets) : null;
+  const linuxAsset = release ? pickLinuxDownloadAsset(release.assets) : null;
+  const downloadOptions = release
+    ? [
+        {
+          label: "Apple Silicon",
+          sublabel: "M1, M2, M3, M4",
+          badge: "macOS download",
+          asset: appleSiliconAsset,
+        },
+        {
+          label: "Intel Mac",
+          sublabel: "Intel processors",
+          badge: "macOS download",
+          asset: intelAsset,
+        },
+        {
+          label: "Windows",
+          sublabel: "Windows 10 / 11 x64",
+          badge: "Windows download",
+          asset: windowsAsset,
+        },
+        {
+          label: "Linux",
+          sublabel: "AppImage for x86_64",
+          badge: "Linux download",
+          asset: linuxAsset,
+        },
+      ]
+    : [];
 
   return (
     <main className="min-h-screen bg-surface pt-24 sm:pt-28">
@@ -1162,36 +1240,11 @@ const DownloadPage = ({
               transition={{ duration: 0.4, ease: "easeOut" }}
               className="mx-auto grid w-full max-w-4xl gap-5 md:grid-cols-2"
             >
-              {[
-                {
-                  label: "Apple Silicon",
-                  sublabel: "M1, M2, M3, M4",
-                  asset: appleSiliconAsset,
-                  available: true,
-                },
-                {
-                  label: "Intel Mac",
-                  sublabel: "Intel processors",
-                  asset: intelAsset,
-                  available: true,
-                },
-                {
-                  label: "Windows",
-                  sublabel: "Coming soon",
-                  asset: null,
-                  available: false,
-                },
-                {
-                  label: "Linux",
-                  sublabel: "Coming soon",
-                  asset: null,
-                  available: false,
-                },
-              ].map((item) =>
-                item.available ? (
+              {downloadOptions.map((item) =>
+                item.asset ? (
                   <a
                     key={item.label}
-                    href={item.asset?.downloadUrl ?? release.htmlUrl}
+                    href={item.asset.downloadUrl}
                     className={`group flex min-h-[280px] flex-col justify-between rounded-[2rem] border border-border bg-card/70 p-7 shadow-[0_22px_60px_rgba(0,0,0,0.12)] transition-all hover:-translate-y-1 hover:border-accent/40 hover:bg-card hover:shadow-[0_28px_80px_rgba(0,110,254,0.16)] sm:p-8 ${FOCUS_RING}`}
                   >
                     <div className="space-y-6">
@@ -1201,7 +1254,7 @@ const DownloadPage = ({
                           animate={{ opacity: [0.55, 1, 0.55] }}
                           transition={{ duration: 2.4, repeat: Infinity }}
                         />
-                        macOS download
+                        {item.badge}
                       </div>
 
                       <div className="space-y-3">
@@ -1215,38 +1268,25 @@ const DownloadPage = ({
                     </div>
 
                     <div className="space-y-4">
-                      {item.asset ? (
-                        <>
-                          <div className="space-y-2">
-                            <p className="truncate text-base font-semibold text-ink">
-                              {item.asset.name}
-                            </p>
-                            <p className="text-sm text-subtle">
-                              {formatFileSize(item.asset.size)}
-                              {item.asset.downloadCount > 0
-                                ? ` • ${item.asset.downloadCount} downloads`
-                                : ""}
-                            </p>
-                          </div>
-                          <div className="flex items-center justify-between gap-4">
-                            <span className="font-mono text-xs uppercase tracking-[0.24em] text-subtle">
-                              {release.tag}
-                            </span>
-                            <span className="font-mono text-xs uppercase tracking-[0.24em] text-accent transition-transform group-hover:translate-x-1">
-                              Download
-                            </span>
-                          </div>
-                        </>
-                      ) : (
-                        <div className="space-y-3">
-                          <p className="text-sm leading-7 text-subtle">
-                            This release doesn&apos;t currently include a matching {item.label.toLowerCase()} installer.
-                          </p>
-                          <span className="font-mono text-xs uppercase tracking-[0.24em] text-accent">
-                            View release
-                          </span>
-                        </div>
-                      )}
+                      <div className="space-y-2">
+                        <p className="truncate text-base font-semibold text-ink">
+                          {item.asset.name}
+                        </p>
+                        <p className="text-sm text-subtle">
+                          {formatFileSize(item.asset.size)}
+                          {item.asset.downloadCount > 0
+                            ? ` • ${item.asset.downloadCount} downloads`
+                            : ""}
+                        </p>
+                      </div>
+                      <div className="flex items-center justify-between gap-4">
+                        <span className="font-mono text-xs uppercase tracking-[0.24em] text-subtle">
+                          {release.tag}
+                        </span>
+                        <span className="font-mono text-xs uppercase tracking-[0.24em] text-accent transition-transform group-hover:translate-x-1">
+                          Download
+                        </span>
+                      </div>
                     </div>
                   </a>
                 ) : (
@@ -1271,7 +1311,7 @@ const DownloadPage = ({
 
                     <div className="space-y-3">
                       <p className="text-sm leading-7 text-subtle">
-                        Windows downloads aren&apos;t available yet, but this card reserves the slot in the platform lineup.
+                        This release doesn&apos;t currently include a matching {item.label.toLowerCase()} installer.
                       </p>
                       <span className="font-mono text-xs uppercase tracking-[0.24em] text-subtle">
                         Not yet available
