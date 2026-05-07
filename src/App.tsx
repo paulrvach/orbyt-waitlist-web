@@ -18,6 +18,7 @@ import {
   ZapIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { useMutation, useQuery } from "convex/react";
 import type { IconSvgElement } from "@hugeicons/react";
 import { motion, AnimatePresence } from "motion/react";
 import React, { useState, useEffect, useRef, useCallback } from "react";
@@ -33,6 +34,7 @@ import {
 } from "@/components/brand-icon";
 import { Features } from "@/components/blocks/features-8";
 import FAQs from "@/components/ui/faq";
+import { api } from "@/convex/_generated/api";
 import {
   fetchLatestRelease,
   GitHubReleaseError,
@@ -92,6 +94,10 @@ const DOWNLOAD_NAV_ITEMS = [
   { label: "Home", href: HOME_PATH },
   { label: "Download", href: DOWNLOAD_PATH },
 ] as const;
+
+function createDownloadAssetKey(releaseTag: string, assetName: string) {
+  return `${releaseTag}:${assetName}`;
+}
 
 function formatReleaseDate(value: string) {
   if (!value) return "Unknown publish date";
@@ -1141,6 +1147,54 @@ const DownloadPage = ({
         },
       ]
     : [];
+  const availableDownloadOptions = downloadOptions.filter(
+    (
+      item,
+    ): item is (typeof downloadOptions)[number] & {
+      asset: NonNullable<(typeof downloadOptions)[number]["asset"]>;
+    } => Boolean(item.asset),
+  );
+  const downloadAssetKeys = release
+    ? availableDownloadOptions.map((item) =>
+        createDownloadAssetKey(release.tag, item.asset.name),
+      )
+    : [];
+  const recordedDownloadCounts =
+    useQuery(
+      api.downloads.getCounts,
+      release ? { assetKeys: downloadAssetKeys } : "skip",
+    ) ?? {};
+  const recordDownloadClick = useMutation(api.downloads.recordClick);
+
+  const handleDownloadClick = useCallback(
+    async (
+      event: React.MouseEvent<HTMLAnchorElement>,
+      item: (typeof availableDownloadOptions)[number],
+    ) => {
+      event.preventDefault();
+
+      if (!release) {
+        window.location.assign(item.asset.downloadUrl);
+        return;
+      }
+
+      try {
+        await recordDownloadClick({
+          assetKey: createDownloadAssetKey(release.tag, item.asset.name),
+          label: item.label,
+          platform: item.sublabel,
+          assetName: item.asset.name,
+          downloadUrl: item.asset.downloadUrl,
+          releaseTag: release.tag,
+        });
+      } catch (error) {
+        console.error("Failed to record download click", error);
+      } finally {
+        window.location.assign(item.asset.downloadUrl);
+      }
+    },
+    [recordDownloadClick, release],
+  );
 
   return (
     <main className="min-h-screen bg-surface pt-24 sm:pt-28">
@@ -1245,6 +1299,7 @@ const DownloadPage = ({
                   <a
                     key={item.label}
                     href={item.asset.downloadUrl}
+                    onClick={(event) => handleDownloadClick(event, item)}
                     className={`group flex min-h-[280px] flex-col justify-between rounded-[2rem] border border-border bg-card/70 p-7 shadow-[0_22px_60px_rgba(0,0,0,0.12)] transition-all hover:-translate-y-1 hover:border-accent/40 hover:bg-card hover:shadow-[0_28px_80px_rgba(0,110,254,0.16)] sm:p-8 ${FOCUS_RING}`}
                   >
                     <div className="space-y-6">
@@ -1276,6 +1331,13 @@ const DownloadPage = ({
                           {formatFileSize(item.asset.size)}
                           {item.asset.downloadCount > 0
                             ? ` • ${item.asset.downloadCount} downloads`
+                            : ""}
+                          {(recordedDownloadCounts[
+                            createDownloadAssetKey(release.tag, item.asset.name)
+                          ] ?? 0) > 0
+                            ? ` • ${recordedDownloadCounts[
+                                createDownloadAssetKey(release.tag, item.asset.name)
+                              ]} clicks`
                             : ""}
                         </p>
                       </div>
