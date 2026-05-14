@@ -3,6 +3,14 @@
     {
       "source": "/download",
       "destination": "/"
+    },
+    {
+      "source": "/docs",
+      "destination": "/"
+    },
+    {
+      "source": "/docs/(.*)",
+      "destination": "/"
     }
   ]
 }
