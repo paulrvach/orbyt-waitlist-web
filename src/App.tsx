@@ -35,6 +35,16 @@ import {
 import { Features } from "@/components/blocks/features-8";
 import FAQs from "@/components/ui/faq";
 import { api } from "@/convex/_generated/api";
+import { DocsErrorBoundary } from "@/src/docs/DocsErrorBoundary";
+import { DocsPage } from "@/src/docs/DocsPage";
+import {
+  DEFAULT_DOCS_PATH,
+  DOWNLOAD_PATH,
+  HOME_PATH,
+  isInternalAppPath,
+  normalizePath,
+  routeOf,
+} from "@/src/docs/route-utils";
 import {
   fetchLatestRelease,
   GitHubReleaseError,
@@ -63,8 +73,6 @@ const Hi = ({
 
 const LOOPS_FORM_URL = import.meta.env.VITE_LOOPS_FORM_URL as string | undefined;
 const GITHUB_RELEASES_REPO = import.meta.env.VITE_GITHUB_RELEASES_REPO as string | undefined;
-const DOWNLOAD_PATH = "/download";
-const HOME_PATH = "/";
 const SHELL_PADDING = "px-6 sm:px-8 lg:px-12";
 const FOCUS_RING =
   "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-surface";
@@ -87,11 +95,19 @@ const HOME_NAV_ITEMS = [
   { label: "Integrations", href: "#integrations" },
   { label: "Demo", href: "#demo" },
   { label: "FAQ", href: "#faq" },
+  { label: "Docs", href: DEFAULT_DOCS_PATH },
   { label: "Download", href: DOWNLOAD_PATH },
 ] as const;
 
 const DOWNLOAD_NAV_ITEMS = [
   { label: "Home", href: HOME_PATH },
+  { label: "Docs", href: DEFAULT_DOCS_PATH },
+  { label: "Download", href: DOWNLOAD_PATH },
+] as const;
+
+const DOCS_NAV_ITEMS = [
+  { label: "Home", href: HOME_PATH },
+  { label: "Docs", href: DEFAULT_DOCS_PATH },
   { label: "Download", href: DOWNLOAD_PATH },
 ] as const;
 
@@ -131,9 +147,6 @@ function formatFileSize(bytes: number) {
   return `${value.toFixed(digits)} ${units[unitIndex]}`;
 }
 
-function isInternalAppPath(href: string) {
-  return href === HOME_PATH || href === DOWNLOAD_PATH;
-}
 
 const ignoredReleaseAssetSuffixes = [
   ".blockmap",
@@ -267,8 +280,18 @@ const Navbar = ({
 }) => {
   const [isScrolled, setIsScrolled] = useState(false);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const isDownloadPage = currentPath === DOWNLOAD_PATH;
-  const navItems = isDownloadPage ? DOWNLOAD_NAV_ITEMS : HOME_NAV_ITEMS;
+  const route = routeOf(currentPath);
+  const navItems =
+    route === "download"
+      ? DOWNLOAD_NAV_ITEMS
+      : route === "docs"
+        ? DOCS_NAV_ITEMS
+        : HOME_NAV_ITEMS;
+
+  const isItemActive = (href: string) => {
+    if (route === "docs" && href === DEFAULT_DOCS_PATH) return true;
+    return currentPath === href;
+  };
 
   useEffect(() => {
     const handleScroll = () => setIsScrolled(window.scrollY > 20);
@@ -317,7 +340,7 @@ const Navbar = ({
               href={item.href}
               onClick={(event) => handleNavClick(event, item.href)}
               className={`rounded-md font-mono text-[13px] uppercase tracking-wider transition-colors hover:text-ink ${FOCUS_RING} ${
-                currentPath === item.href ? "text-ink" : "text-subtle"
+                isItemActive(item.href) ? "text-ink" : "text-subtle"
               }`}
             >
               {item.label}
@@ -378,7 +401,7 @@ const Navbar = ({
                   href={item.href}
                   onClick={(event) => handleNavClick(event, item.href)}
                   className={`rounded-md font-mono text-lg uppercase transition-colors hover:text-ink ${FOCUS_RING} ${
-                    currentPath === item.href ? "text-ink" : "text-subtle"
+                    isItemActive(item.href) ? "text-ink" : "text-subtle"
                   }`}
                 >
                   {item.label}
@@ -1432,7 +1455,10 @@ const Footer = ({
               href={item.href}
               onClick={(event) => handleNavClick(event, item.href)}
               className={`rounded-md font-mono text-xs uppercase tracking-[0.24em] transition-colors hover:text-ink ${FOCUS_RING} ${
-                currentPath === item.href ? "text-ink" : "text-subtle"
+                (routeOf(currentPath) === "docs" && item.href === DEFAULT_DOCS_PATH) ||
+                currentPath === item.href
+                  ? "text-ink"
+                  : "text-subtle"
               }`}
             >
               {item.label}
@@ -1463,8 +1489,7 @@ export default function App() {
     if (typeof window === "undefined") {
       return HOME_PATH;
     }
-
-    return window.location.pathname === DOWNLOAD_PATH ? DOWNLOAD_PATH : HOME_PATH;
+    return normalizePath(window.location.pathname);
   });
   const [isDark, setIsDark] = useState(() =>
     typeof document !== "undefined" &&
@@ -1473,9 +1498,7 @@ export default function App() {
 
   useEffect(() => {
     const handlePopState = () => {
-      setCurrentPath(
-        window.location.pathname === DOWNLOAD_PATH ? DOWNLOAD_PATH : HOME_PATH,
-      );
+      setCurrentPath(normalizePath(window.location.pathname));
     };
 
     window.addEventListener("popstate", handlePopState);
@@ -1488,8 +1511,13 @@ export default function App() {
   }, [isDark]);
 
   useEffect(() => {
-    document.title =
-      currentPath === DOWNLOAD_PATH ? "Orbyt - Download" : "Orbyt - Waitlist";
+    const route = routeOf(currentPath);
+    if (route === "download") {
+      document.title = "Orbyt - Download";
+    } else if (route === "home") {
+      document.title = "Orbyt - Waitlist";
+    }
+    // Docs title is owned by DocsPage so it can include the active page title.
     window.scrollTo(0, 0);
   }, [currentPath]);
 
@@ -1498,7 +1526,7 @@ export default function App() {
   }, []);
 
   const navigate = useCallback((path: string) => {
-    const nextPath = path === DOWNLOAD_PATH ? DOWNLOAD_PATH : HOME_PATH;
+    const nextPath = normalizePath(path);
     if (window.location.pathname !== nextPath) {
       window.history.pushState({}, "", nextPath);
     }
@@ -1536,11 +1564,20 @@ export default function App() {
         isDark={isDark}
         onToggleTheme={toggleTheme}
       />
-      {currentPath === DOWNLOAD_PATH ? (
-        <DownloadPage onNavigate={navigate} />
-      ) : (
-        <HomePage emailInputRef={waitlistEmailRef} onNavigate={navigate} />
-      )}
+      {(() => {
+        const route = routeOf(currentPath);
+        if (route === "download") {
+          return <DownloadPage onNavigate={navigate} />;
+        }
+        if (route === "docs") {
+          return (
+            <DocsErrorBoundary onNavigate={navigate}>
+              <DocsPage path={currentPath} onNavigate={navigate} isDark={isDark} />
+            </DocsErrorBoundary>
+          );
+        }
+        return <HomePage emailInputRef={waitlistEmailRef} onNavigate={navigate} />;
+      })()}
       <Footer currentPath={currentPath} onNavigate={navigate} />
     </div>
   );
